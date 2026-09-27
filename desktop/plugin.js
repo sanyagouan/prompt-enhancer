@@ -8,10 +8,12 @@
  * Hosts without the provider/model passthrough reject the pinned request
  * (contract extra=forbid → 4000 "out of sync"); the plain main-model path
  * works everywhere. Upstream support PR pending for hermes-agent.
- *   - read:  simplified composerPlainText replica (rich-editor.ts semantics)
- *   - write: DOM rebuild + native InputEvent → official flush mirrors to store
+ *   - read:  host.composer.getDraft (official session-addressed draft)
+ *   - write: host.composer.setDraft — the app re-hydrates @ref / `/` tokens
  *   - model: main model by default; the ⌘+click pin overrides it when toggled on
  *   - A2:    write-back only when draft untouched during the wait
+ * Pure-SDK build (catalog review #121246): no DOM write path and no legacy
+ * fallback — hosts without the draft API are gated out via requires_hermes.
  *
  * Layout fix (stacked mode): the official controls cluster wraps itself in an
  * `ml-auto` div. Single-line the controls grid cell is `auto`-sized (no free
@@ -58,21 +60,7 @@ const SYSTEM_TEMPLATE = `你是一位提示词工程专家，负责改进用户�
 
 // ── pure:TDD-BEGIN ──
 const RICH_INPUT_SLOT = 'composer-rich-input'
-
-function serializeEditor(node) {
-  if (node.nodeType === 3) return node.textContent || ''
-  if (node.nodeType !== 1) return ''
-  const el = node
-  if (el.dataset && el.dataset.refText) return el.dataset.refText
-  if (
-    el.dataset && el.dataset.slot === RICH_INPUT_SLOT &&
-    el.childNodes.length === 1 && el.firstChild && el.firstChild.nodeName === 'BR'
-  ) return ''
-  if (el.tagName === 'BR') return '\n'
-  const text = Array.from(el.childNodes).map(serializeEditor).join('')
-  const block = el.tagName === 'DIV' || el.tagName === 'P'
-  return block && text && el.dataset.slot !== RICH_INPUT_SLOT ? text + '\n' : text
-}
+const COMPOSER_SURFACE_SLOT = 'composer-surface'
 
 function stripWrappingQuotes(text) {
   return String(text).trim().replace(/^["'“”‘’「」『』]|["'“”‘’「」『』]$/g, '')
@@ -100,7 +88,7 @@ const stateByEditor = new WeakMap() // editor → { phase, backup, lastApplied, 
 function editorState(editor) {
   let s = stateByEditor.get(editor)
   if (!s) {
-    s = { phase: 'idle', backup: '', lastApplied: '', seq: 0, slashKinds: null }
+    s = { phase: 'idle', backup: '', lastApplied: '', seq: 0 }
     stateByEditor.set(editor, s)
   }
   return s
@@ -224,157 +212,13 @@ function tNotify(kind, key, ...args) {
   host.notify({ kind, message: msg ?? `[prompt-enhancer] ${key}` })
 }
 
+// The button's OWN composer editor. Both live inside the surface wrapper
+// (actions strip + rich editor are siblings), so hop one level then find the
+// editor slot — read-only: isContentEditable probe + change-watch target
+// below; all draft I/O goes through host.composer.
 function resolveEditor(btnEl) {
-  const root = btnEl?.closest?.('[data-slot="composer-root"]')
+  const root = btnEl?.closest?.(`[data-slot="${COMPOSER_SURFACE_SLOT}"]`)
   return root?.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) ?? null
-}
-
-// ── Official-parity chip hydration (v1.1.0) ──
-// Mirror of rich-editor.ts appendComposerContents: when text arrives whole, the
-// official pipeline re-chips `@kind:value` refs and known `/command` tokens so
-// the composer shows the same pills the typed path would have committed. The
-// plugin writes back "whole text" too, so it must do the same — otherwise the
-// enhanced result loses the pill rendering the user's draft already had.
-// Chip DOM recipe mirrors refChipElement/slashChipElement (data-ref-text carries
-// the serialized literal; flush mirrors it back on submit — round-trip safe).
-const CHIP_REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(\u0060[^\u0060\n]+\u0060|"[^"\n]+"|'[^'\n]+'|\S+)/g
-const CHIP_SLASH_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
-const CHIP_ICON_PATHS = {
-  file: ['M14 3v4a1 1 0 0 0 1 1h4','M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2','M9 9l1 0','M9 13l6 0','M9 17l6 0'],
-  folder: ['M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2'],
-  url: ['M9 15l6 -6','M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464','M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463'],
-  image: ['M15 8h.01','M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12','M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5','M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3'],
-  tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
-  line: ['M5 9l14 0','M5 15l14 0','M11 4l-4 16','M17 4l-4 16'],
-  terminal: ['M5 7l5 5l-5 5','M12 19l7 0'],
-  session: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227'],
-  command: ['M5 7l5 5l-5 5','M12 19l7 0'],
-  skill: ['M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11']
-}
-const CHIP_LABELS = { file: 'Files', folder: 'Folders', url: 'Links', image: 'Images', tool: 'Tools', line: 'Lines', terminal: 'Terminal', session: 'Sessions', command: 'Commands', skill: 'Skills' }
-
-function chipIconSvg(kind) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('viewBox', '0 0 24 24')
-  svg.setAttribute('fill', 'none')
-  svg.setAttribute('stroke', 'currentColor')
-  svg.setAttribute('stroke-width', '2')
-  svg.setAttribute('stroke-linecap', 'round')
-  svg.setAttribute('stroke-linejoin', 'round')
-  for (const d of CHIP_ICON_PATHS[kind] ?? []) {
-    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    p.setAttribute('d', d)
-    svg.append(p)
-  }
-  return svg
-}
-
-function unquoteRef(raw) {
-  const head = raw[0], tail = raw[raw.length - 1]
-  const quoted = (head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")
-  return quoted ? raw.slice(1, -1) : raw.replace(/[,.;!?]+$/, '')
-}
-
-function quoteRefValue(value) {
-  if (!value.includes('`')) return '`' + value + '`'
-  if (!value.includes('"')) return '"' + value + '"'
-  if (!value.includes("'")) return "'" + value + "'"
-  return '`' + value.replace(/`/g, "'") + '`'
-}
-
-function refChipEl(kind, rawValue) {
-  const id = unquoteRef(rawValue)
-  const chip = document.createElement('span')
-  chip.contentEditable = 'false'
-  chip.title = id
-  chip.dataset.refText = '@' + kind + ':' + quoteRefValue(id)
-  chip.dataset.refId = id
-  chip.dataset.refKind = kind
-  chip.className = 'ref'
-  chip.dataset.ref = kind
-  chip.append(chipIconSvg(kind), document.createTextNode(id))
-  return chip
-}
-
-function slashChipEl(command, kind) {
-  const chip = document.createElement('span')
-  chip.contentEditable = 'false'
-  chip.dataset.refText = command
-  chip.dataset.slashKind = kind
-  chip.className = 'ref'
-  chip.dataset.ref = kind
-  chip.append(chipIconSvg(kind), document.createTextNode(command))
-  return chip
-}
-
-// Mirror of chipSpans: scan whole text, interleave text segments with chips.
-// Collect slash tokens that already exist as chips in the ORIGINAL draft.
-// Skill names are dynamic (backend catalog) and unknown to the plugin — but
-// any `/skill` the user committed as a chip carries data-slash-kind, so we
-// snapshot token→kind from the editor before enhancing and reuse it on
-// write-back. This is how enhanced results keep skill pills without knowing
-// the catalog.
-function collectDraftSlashChips(editor) {
-  const map = new Map()
-  for (const chip of editor.querySelectorAll('[data-slash-kind][data-ref-text]')) {
-    const token = chip.dataset.refText.replace(/^\//, '')
-    if (token) map.set(token, chip.dataset.slashKind)
-  }
-  return map
-}
-
-function chipSpansFor(text, extraSlashKinds) {
-  CHIP_REF_RE.lastIndex = 0
-  const spans = []
-  for (const m of text.matchAll(CHIP_REF_RE)) {
-    const start = m.index ?? 0
-    spans.push({ start, end: start + m[0].length, node: () => refChipEl(m[1], m[2]) })
-  }
-  for (const m of text.matchAll(CHIP_SLASH_RE)) {
-    // Chip 化只认原草稿里用户已确认过的 chip（token→kind 快照）——词表会过时，
-    // 快照不会；草稿里没有的 /word 保持纯文本，气泡渲染层仍会 pill 化，无损。
-    const kind = extraSlashKinds?.get(m[1])
-    if (!kind) continue
-    const start = m.index ?? 0
-    spans.push({ start, end: start + m[0].length, node: () => slashChipEl('/' + m[1], kind) })
-  }
-  return spans.sort((a, b) => a.start - b.start)
-}
-
-// Official appendComposerContents mirror: overlap guard + text-with-breaks.
-function appendChippedContents(target, text, extraSlashKinds) {
-  let cursor = 0
-  for (const span of chipSpansFor(text, extraSlashKinds)) {
-    if (span.start < cursor) continue
-    appendTextWithBreaks(target, text.slice(cursor, span.start))
-    target.append(span.node())
-    cursor = span.end
-  }
-  appendTextWithBreaks(target, text.slice(cursor))
-}
-
-function appendTextWithBreaks(target, text) {
-  const lines = String(text).split('\n')
-  lines.forEach((line, index) => {
-    if (index > 0) target.append(document.createElement('br'))
-    if (line) target.append(document.createTextNode(line))
-  })
-}
-
-function writeBack(editor, text, extraSlashKinds) {
-  // Chip-hydrated write-back (v1.1.0): same pipeline as an official paste —
-  // @refs and known /commands render as pills, everything else stays text.
-  const frag = document.createDocumentFragment()
-  appendChippedContents(frag, text, extraSlashKinds)
-  editor.replaceChildren(frag)
-  editor.focus()
-  const range = document.createRange()
-  range.selectNodeContents(editor)
-  range.collapse(false)
-  const sel = window.getSelection()
-  sel?.removeAllRanges()
-  sel?.addRange(range)
-  editor.dispatchEvent(new InputEvent('input', { bubbles: true }))
 }
 
 const RETRY_DELAYS_MS = [3000, 5000]
@@ -389,30 +233,30 @@ function isRateLimited(err) {
 
 // ── host.composer draft API (hermes-agent #120907) ────────────────────────
 // On hosts exposing host.composer the whole read/write pair goes through the
-// app's own paint path: getDraft answers with the live text (our serializer's
-// semantics — refText → literal token), setDraft re-hydrates @ref / `/`
-// tokens into chips exactly like an official paste (the app's
-// renderComposerContents). Our hand-rolled serialize/writeBack/chip layer
-// below is therefore LEGACY — kept only for desktop releases predating the
-// API, plus the last-resort fallback when the SDK write answers false (its
-// fail-closed contract = no mounted surface claimed the address, e.g. the
-// user switched away while the LLM call ran — the button's own editor is
-// still the surface the user clicked).
+// getDraft answers with the live text, setDraft re-hydrates @ref / `/` tokens
+// into chips exactly like an official paste (the app's renderComposerContents).
+// This is the ONLY draft path: hosts below the API are gated out by
+// requires_hermes, and a false write (fail-closed contract = no mounted
+// surface claimed the address, e.g. the user switched away while the LLM call
+// ran) is reported to the user, never papered over with DOM.
 function sdkComposer() {
   const c = host.composer
   return c && typeof c.getDraft === 'function' && typeof c.setDraft === 'function' ? c : null
 }
 
 async function runEnhance(btnEl, onPhase, onRetry) {
+  const c = sdkComposer()
+  if (!c) return tNotify('error', 'notify.failed', 'requires Hermes ≥ 0.21.5 (composer draft API)')
   const editor = resolveEditor(btnEl)
   if (!editor) return tNotify('error', 'notify.noEditor')
   if (!editor.isContentEditable) return tNotify('error', 'notify.notEditable')
   const st = editorState(editor)
   if (st.phase === 'enhancing') return
-  // Ref chips (@file:... etc) serialize to their literal command text and the
-  // official renderer rebuilds them on write-back (REF_RE chipSpans) — so a
+  // Ref chips (@file:... etc) serialize to their literal command text inside
+  // the draft and the official renderer rebuilds them on write-back — so a
   // mixed draft is enhanceable: we protect the chip tokens in the template.
-  const hasChips = editor.querySelector('[data-ref-text]') !== null
+  // (Token scan on the TEXT, not the DOM: getDraft already carries them.)
+  const CHIP_REF_RE = /@(file|folder|url|image|tool|line|terminal|session):/
   // Routing (user spec): pin enabled → session_id + explicit provider/model
   // (the pin wins over the session's model). Pin off / never picked → send the
   // request BARE (no session_id): llm.oneshot's auto arm then lands on the
@@ -420,11 +264,9 @@ async function runEnhance(btnEl, onPhase, onRetry) {
   // run — the picker is the only thing that steers enhancement.
   const sessionId = resolveSessionId(btnEl, () => host.state.activeSessionId.get())
   const pin = effectivePin()
-  // SDK read: null (no surface answers) falls back to the legacy serializer
-  // so a half-wired host never loses the read.
-  const c = sdkComposer()
-  const draftText = c ? await c.getDraft(sessionId) : null
-  const text = draftText ?? serializeEditor(editor)
+  const draftText = await c.getDraft(sessionId)
+  const text = draftText ?? ''
+  const hasChips = CHIP_REF_RE.test(text)
   if (!text.trim()) {
     // Images/attachments alone (no text) land here — tell the user instead of
     // silently no-oping (v3 §1 said "no-op", user feedback corrected it).
@@ -434,10 +276,9 @@ async function runEnhance(btnEl, onPhase, onRetry) {
   if (text.length > MAX_INPUT_CHARS) return tNotify('error', 'notify.tooLong', text.length, MAX_INPUT_CHARS)
 
   const snapshot = text
-  // Draft-unchanged guard: re-read the live draft and compare TEXT (SDK hosts
-  // answer with the same authoritative string the read gave us; serializeEditor
-  // stays the fallback). Prevents writing an enhancement onto text the user
-  // kept editing while the LLM was thinking.
+  // Draft-unchanged guard: re-read the live draft and compare TEXT. Prevents
+  // writing an enhancement onto text the user kept editing while the LLM was
+  // thinking.
   const seq = ++st.seq
   st.phase = 'enhancing'
   onPhase('enhancing')
@@ -488,8 +329,8 @@ async function runEnhance(btnEl, onPhase, onRetry) {
     if (seq !== st.seq) return
     const cleaned = stripWrappingQuotes(String(res?.text ?? ''))
     if (!cleaned.trim()) throw new Error('empty')
-    const live = c ? await c.getDraft(sessionId) : null
-    if ((live ?? serializeEditor(editor)) !== snapshot) {
+    const live = await c.getDraft(sessionId)
+    if (live !== snapshot) {
       tNotify('info', 'notify.draftChanged')
       st.phase = 'idle'
       onPhase('idle')
@@ -497,25 +338,22 @@ async function runEnhance(btnEl, onPhase, onRetry) {
     }
     st.backup = snapshot
     st.lastApplied = cleaned
-    // SDK write first (the app re-hydrates @ref / `/` tokens into chips on
-    // paint); a false/throw means no mounted surface claimed the address —
-    // fall back to the legacy DOM writer, which always targets the button's
-    // own editor, i.e. the surface the user actually clicked.
+    // SDK-only write: false/throw = no mounted surface claimed the address
+    // (user switched away mid-call). Tell the user; never reach into the DOM.
     let applied = false
-    if (c) {
-      try { applied = await c.setDraft(sessionId, cleaned) } catch { applied = false }
-    }
+    try { applied = await c.setDraft(sessionId, cleaned) } catch { applied = false }
     if (!applied) {
-      st.slashKinds = collectDraftSlashChips(editor)
-      writeBack(editor, cleaned, st.slashKinds)
-    } else {
-      // The app normalizes on paint (a known `/token` becomes a pill, a ref
-      // token gains its canonical quoting) — store the composer's OWN text so
-      // the auto-reset observer and revert's stale check compare like with
-      // like instead of tripping on that normalization.
-      const painted = await c.getDraft(sessionId)
-      if (typeof painted === 'string') st.lastApplied = painted
+      tNotify('info', 'notify.draftChanged')
+      st.phase = 'idle'
+      onPhase('idle')
+      return
     }
+    // The app normalizes on paint (a known `/token` becomes a pill, a ref
+    // token gains its canonical quoting) — store the composer's OWN text so
+    // the auto-reset observer and revert's stale check compare like with
+    // like instead of tripping on that normalization.
+    const painted = await c.getDraft(sessionId)
+    if (typeof painted === 'string') st.lastApplied = painted
     st.phase = 'enhanced'
     onPhase('enhanced')
     if (looksTruncated(cleaned)) {
@@ -531,30 +369,22 @@ async function runEnhance(btnEl, onPhase, onRetry) {
 }
 
 async function revert(btnEl, onPhase) {
-  const editor = resolveEditor(btnEl)
-  if (!editor) {
-    const st = editorState(editor ?? btnEl?.closest?.('[data-slot="composer-root"]')?.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`))
-    if (st) { st.phase = 'idle'; onPhase('idle') }
-    return
-  }
-  const st = editorState(editor)
   const c = sdkComposer()
+  if (!c) return
+  const editor = resolveEditor(btnEl)
+  if (!editor) return // button detached (session switched) — nothing to restore into
+  const st = editorState(editor)
   const sessionId = resolveSessionId(btnEl, () => host.state.activeSessionId.get())
-  const live = c ? await c.getDraft(sessionId) : null
-  if ((live ?? serializeEditor(editor)) !== st.lastApplied) {
+  const live = await c.getDraft(sessionId)
+  if (live !== st.lastApplied) {
     tNotify('info', 'notify.revertStale')
     st.phase = 'idle'
     onPhase('idle')
     return
   }
   let applied = false
-  if (c) {
-    try { applied = await c.setDraft(sessionId, st.backup) } catch { applied = false }
-  }
-  if (!applied) {
-    if (!st.slashKinds) st.slashKinds = collectDraftSlashChips(editor)
-    writeBack(editor, st.backup, st.slashKinds)
-  }
+  try { applied = await c.setDraft(sessionId, st.backup) } catch { applied = false }
+  if (!applied) tNotify('info', 'notify.revertStale')
   st.phase = 'idle'
   onPhase('idle')
 }
@@ -630,14 +460,23 @@ function EnhanceButton() {
     const editor = resolveEditor(btn)
     if (!editor) return
     const st = editorState(editor)
+    // Read-only change-watch (send clears the draft, user edits mutate it):
+    // any mutation re-reads the authoritative draft and drops to idle when it
+    // diverges from what we applied. DOM is never written from here.
     const mo = new MutationObserver(() => {
       if (st.phase !== 'enhanced') return
-      if (serializeEditor(editor) !== st.lastApplied) {
-        st.phase = 'idle'
-        st.backup = ''
-        st.lastApplied = ''
-        setPhase('idle')
-      }
+      const c = sdkComposer()
+      if (!c) return
+      const btn = btnRef.current
+      void c.getDraft(resolveSessionId(btn, () => host.state.activeSessionId.get())).then((live) => {
+        if (st.phase !== 'enhanced') return
+        if (live !== null && live !== st.lastApplied) {
+          st.phase = 'idle'
+          st.backup = ''
+          st.lastApplied = ''
+          setPhase('idle')
+        }
+      }).catch(() => { /* detached mid-read — next observer tick retries */ })
     })
     mo.observe(editor, { childList: true, characterData: true, subtree: true })
     return () => mo.disconnect()

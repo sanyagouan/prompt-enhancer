@@ -145,40 +145,23 @@ function await_import_fs() {
 }
 
 
-// [v1.1.0] chip 化写回存在（保留官方 pill 渲染）
-test('R9: 写回管线含官方同款 chip hydration', () => {
+// [v1.6.0] chip 保真改由官方 setDraft 水化负责（旧 DOM 写回层已随 #121246 审查删除）
+test('R9: chip token 走草稿文本保护，模板含 token 保真约束', () => {
   const fs = process.getBuiltinModule('fs')
   const src = fs.readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
-  assert.ok(/appendChippedContents\(frag, text/.test(src), 'writeBack 走 chip 化构建')
-  assert.ok(/CHIP_REF_RE/.test(src) && /CHIP_SLASH_RE/.test(src) && /collectDraftSlashChips/.test(src), 'ref+slash 扫描齐备，slash 走草稿快照')
-  assert.ok(/data-ref-text/.test(src), 'chip 携带序列化源（round-trip 安全）')
-  // 防误识别约束必须不存在（用户要保留渲染，不能让模板回避 token）
+  // 识别在 getDraft 返回的文本上（不是 DOM 查询）
+  assert.ok(/CHIP_REF_RE\.test\(text\)/.test(src), 'hasChips 走文本正则')
+  assert.ok(!/querySelector\('\[data-ref-text\]'\)/.test(src), '不再查 chip DOM')
+  // chip 存在时，模板追加 token 保真约束（用户核心诉求：引用标记不丢）
+  assert.ok(/额外硬性约束[\s\S]*必须原样保留/.test(src), '模板含 token 原样保留约束')
   const m = src.match(/const SYSTEM_TEMPLATE = `(.*?)`/s)
   assert.ok(m && !/输出格式防误识别/.test(m[1]), '模板无防误识别约束（已回滚）')
 })
 
-// [v1.1.0] chip 化纯快照驱动（无词表）：原草稿 chip 是唯一依据
-test('R10: slash chip 化只认原草稿快照，路径/陌生词不误报', () => {
-  const CHIP_SLASH_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
-  function scan(text, kinds) {
-    const out = []
-    for (const m of text.matchAll(CHIP_SLASH_RE)) {
-      const kind = kinds?.get(m[1])
-      if (kind) out.push('/' + m[1] + ':' + kind)
-    }
-    return out
-  }
-  const draftKinds = new Map([['caveman', 'skill']])
-  // 原草稿已有的 skill → chip 化
-  assert.deepEqual(scan('用 /caveman 风格写周报', draftKinds), ['/caveman:skill'])
-  // 陌生命令词（无快照）→ 纯文本
-  assert.deepEqual(scan('运行 /compact 清理', draftKinds), [])
-  // 路径不误报
-  assert.deepEqual(scan('检查 a/b/c 目录', draftKinds), [])
-  // 内置命令也必须来自快照（用户用过才保留）
-  const withCmd = new Map([['compact', 'command']])
-  assert.deepEqual(scan('运行 /compact 清理', withCmd), ['/compact:command'])
-})
+// R10 (v1.1.0 slash-chip snapshot mirror) removed in v1.6.0: the snapshot/
+// write-back layer was deleted with the catalog review #121246 — chip
+// hydration is now entirely the official setDraft's job. sdk-only.test.mjs
+// pins the new contract.
 // [M2] ⌘+click 开关浮层：官方列表 + 我们自己的自定义模型开关；编辑模型
 // 入口由宿主 showEditModels: false 隐藏（列表本身已是可见模型列表）。
 test('R11: ⌘+click 浮层齐备（开关 / oneshot 透传 / 存储 / 官方菜单）', () => {
