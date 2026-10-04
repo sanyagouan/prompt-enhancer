@@ -37,26 +37,26 @@ const BTN_ATTR = 'data-prompt-enhancer-btn'
 const GHOST_ICON_BTN =
   'size-(--composer-control-size) shrink-0 rounded-md text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 
-const SYSTEM_TEMPLATE = `你是一位提示词工程专家，负责改进用户发给 AI 助手的提示词。给定一段提示词，分析并增强它，生成更有效的版本，同时保持其核心意图不变。
+const SYSTEM_TEMPLATE = `Eres un experto en ingeniería de prompts encargado de mejorar los mensajes que el usuario envía a un asistente de IA. Dado un borrador, analízalo y produce una versión más eficaz manteniendo intacta su intención original.
 
-改写原则：
-- 指令清晰、具体
-- 补齐必要的上下文与约束
-- 明确期望的输出形式
-- 结构清晰，便于执行
-- 自动识别并修正语音输入造成的口误、笔误、同音/近音错别字、漏字、多字和明显语序错误（例如把"全休"还原为"全修"这类同音字问题）；修正应基于上下文推断用户本意，不改变原意；无法确定是否错误时保持原样，避免过度改写
+Principios de reescritura:
+- Instrucciones claras, concretas y sin ambigüedad
+- Aporta el contexto y las restricciones necesarias
+- Define con precisión la forma de la salida esperada
+- Estructura clara, lista para ejecutar
+- Detecta y corrige automáticamente errores de dictado por voz, erratas, homófonos, caracteres omitidos o duplicados y órdenes de las palabras evidentemente equivocadas (por ejemplo, restaurar «todabia» a «todavía»); corrige infiriendo la intención real del usuario sin cambiar el sentido; si no puedes determinar si algo es un error, déjalo tal cual y no sobrecorrijas
 
-硬性约束：
-1. 语言跟随是最高优先级：必须严格使用与用户输入完全相同的语言（中文输入→中文输出，英文输入→英文输出，混排输入保持自然混排）。
-2. 保持精炼：增强后的提示词不超过约 800 字符。
-3. 只输出增强后的提示词本身，不要任何解释、前言、markdown 代码围栏或语言标签。
-4. 只改写，不回答：不要回答用户的问题，而是把它改写得更明确。
-5. 不要主动索取教程/操作指南，除非用户明确要求。
-6. 不要索要代码片段。
-7. 不要建议用户未提及的具体技术栈。
-8. 不要解释怎么做，聚焦于要做什么。
-9. 不编造事实，不擅自添加无关需求。
-10. 原文已经足够清晰时，做轻度润色，不要原样返回，也不要过度扩充。`
+Restricciones estrictas:
+1. Prioridad máxima — idioma: usa exactamente el mismo idioma del texto del usuario (entrada en español → salida en español; entrada en inglés → salida en inglés; texto mixto → mezcla natural).
+2. Sé conciso: el prompt mejorado no superará unos 800 caracteres.
+3. Devuelve únicamente el prompt mejorado: sin explicaciones, preámbulos, vallas de código markdown ni etiquetas de idioma.
+4. Reescribe, no respondas: no contestes a la pregunta del usuario; reescríbela para que quede más clara.
+5. No sugieras tutoriales ni guías de uso salvo que el usuario los pida explícitamente.
+6. No pidas fragmentos de código.
+7. No propongas stacks tecnológicos concretos que el usuario no haya mencionado.
+8. No expliques cómo hacer las cosas: céntrate en qué hay que hacer.
+9. No inventes hechos ni añadas requisitos ajenos.
+10. Si el original ya es suficientemente claro, aplica un pulido ligero: no lo devuelvas igual ni lo infles en exceso.`
 
 // ── pure:TDD-BEGIN ──
 const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -139,7 +139,32 @@ function effectivePin() {
 // ctx.i18n.register(LOCALES): nested tree, dot-path keys, interpolator fns.
 // Components read via usePluginI18n(ID) (reactive on locale switch);
 // non-React handlers use ctx.i18n.t captured at register time.
+// ES bundle (fork sanyagouan): Spanish UI; 'es-ES' aliases the same tree.
+const ES = {
+  tip: { idle: 'Mejorar prompt', enhancing: 'Mejorando…', retrying: 'Límite de peticiones — reintentando…', revert: 'Volver al original', pinned: (m) => `Mejorar prompt (${m})` },
+  menu: {
+    custom: 'Modelo personalizado', off: 'No', on: 'Sí',
+    statusMain: 'Actual: modelo principal',
+    statusPick: 'Actívalo y elige arriba un modelo'
+  },
+  notify: {
+    noEditor: 'No se encontró el cuadro de texto',
+    notEditable: 'El cuadro de texto no es editable ahora mismo',
+    chipBail: 'El borrador contiene referencias o rutas; mejora aún no disponible',
+    tooLong: (n, max) => `Borrador demasiado largo (${n} > ${max} caracteres); mejora no disponible`,
+    noSession: 'No se pudo resolver la sesión; mejora no disponible',
+    draftChanged: 'Borrador modificado; el resultado no se aplicó',
+    revertStale: 'Borrador modificado; modo revertir cancelado',
+    truncated: 'El resultado puede estar truncado; pulsa el botón para volver al original',
+    emptyDraft: 'El cuadro de texto está vacío; nada que mejorar',
+    empty: 'El resultado de la mejora llegó vacío',
+    failed: (m) => `Error al mejorar: ${m}`
+  }
+}
+
 const LOCALES = {
+  es: ES,
+  'es-ES': ES,
   en: {
     tip: { idle: 'Enhance prompt', enhancing: 'Enhancing…', retrying: 'Rate limited — retrying…', revert: 'Revert to original', pinned: (m) => `Enhance prompt (${m})` },
     menu: {
@@ -284,7 +309,7 @@ async function runEnhance(btnEl, onPhase, onRetry) {
   onPhase('enhancing')
   try {
     const instructions = hasChips
-      ? SYSTEM_TEMPLATE + '\n\n额外硬性约束：文本中的 @file:、@folder:、@url:、@image: 等引用标记是文件/资源引用 token，必须原样保留在增强结果中（位置可以合理调整），禁止改写、翻译或删除它们。'
+      ? SYSTEM_TEMPLATE + '\n\nRestricción adicional estricta: las marcas @file:, @folder:, @url:, @image: y similares del texto son tokens de referencia a archivos o recursos; consérvalos tal cual en el resultado (puedes reposicionarlos con criterio); está prohibido reescribirlos, traducirlos o eliminarlos.'
       : SYSTEM_TEMPLATE
     const req = {
       instructions,
