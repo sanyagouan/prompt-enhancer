@@ -1,7 +1,7 @@
 /**
  * Prompt Enhancer — composer "enhance prompt" button for Hermes desktop.
  *
- * M1 core loop. M2: ⌘/Ctrl+click opens the official model picker
+ * M1 core loop. M2: ⌘+click opens the official model picker
  * (ModelCatalogMenu, "edit models" hidden) carrying OUR own enable toggle:
  * off = Hermes main model (request sent bare — no session inherit),
  * on = the pinned model sent as llm.oneshot provider/model params.
@@ -44,7 +44,6 @@ Principios de reescritura:
 - Aporta el contexto y las restricciones necesarias
 - Define con precisión la forma de la salida esperada
 - Estructura clara, lista para ejecutar
-- Cuando el borrador pida datos, análisis o cualquier afirmación verificable, incorpora a la propia redacción la exigencia de contrastar antes de afirmar, señalar lo que no esté contrastado y admitir lo que se desconozca; en prompts triviales o creativos no fuerces esa exigencia
 - Detecta y corrige automáticamente errores de dictado por voz, erratas, homófonos, caracteres omitidos o duplicados y órdenes de las palabras evidentemente equivocadas (por ejemplo, restaurar «todabia» a «todavía»); corrige infiriendo la intención real del usuario sin cambiar el sentido; si no puedes determinar si algo es un error, déjalo tal cual y no sobrecorrijas
 
 Restricciones estrictas:
@@ -136,73 +135,18 @@ function effectivePin() {
   return modelPin?.enabled && modelPin.provider && modelPin.model ? modelPin : null
 }
 
-// ── Enhance profiles (fork es): ciclo general → técnico → conciso → razonamiento ──
-// Persisted via ctx.storage ('enhanceProfile'), broadcast like the model pin.
-// 'general' adds nothing; the rest append their suffix to SYSTEM_TEMPLATE.
-const PROFILE_ORDER = ['general', 'tecnico', 'conciso', 'razonamiento']
-let profileCurrent = 'general'
-const profileListeners = new Set()
-
-function loadProfile() {
-  try {
-    const v = storageApi?.get('enhanceProfile')
-    if (typeof v === 'string' && PROFILE_ORDER.includes(v)) return v
-  } catch { /* corrupted storage → default */ }
-  return 'general'
-}
-
-function setProfile(id) {
-  if (!PROFILE_ORDER.includes(id)) return
-  profileCurrent = id
-  try { storageApi?.set('enhanceProfile', id) } catch { /* best-effort */ }
-  for (const fn of profileListeners) { try { fn(id) } catch { /* one bad listener must not break the rest */ } }
-}
-
-const PROFILE_SUFFIX = {
-  tecnico: '\n\nPerfil TÉCNICO: el borrador es una tarea de código o sistemas. La versión mejorada precisará, cuando se puedan inferir del propio borrador: archivos, funciones o componentes implicados; condiciones previas y supuestos; comportamiento esperado y criterios de aceptación; qué debe devolver o producir exactamente. No propongas stacks ni librerías que el original no mencione.',
-  conciso: '\n\nPerfil CONCISO: la versión mejorada debe ser más corta que el borrador cuando sea posible; elimina relleno, saludos y repeticiones; conserva cada requisito real; límite orientativo: la mitad de caracteres del original o 400, lo que sea mayor.',
-  razonamiento: '\n\nPerfil RAZONAMIENTO: reformula la petición para que el modelo que la reciba razone paso a paso antes de responder: desglosa el problema, expón supuestos y matices, evalúa alternativas si procede y solo entonces concluya, separando claramente el razonamiento de la conclusión.'
-}
-
-// ── Session context (fork es): últimos turnos como referencia ─────────────
-// Pura y testeable: solo user/assistant visibles y con texto, últimos N,
-// cada fila recortada. Devuelve '' si no hay nada utilizable.
-const CTX_MAX_ROWS = 8
-const CTX_MAX_ROW_CHARS = 500
-function buildContextBlock(messages) {
-  const rows = (Array.isArray(messages) ? messages : [])
-    .filter((m) => (m?.role === 'user' || m?.role === 'assistant') && typeof m?.text === 'string' && m.text.trim() && m?.display_kind !== 'hidden')
-    .slice(-CTX_MAX_ROWS)
-    .map((m) => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, CTX_MAX_ROW_CHARS)}`)
-  if (!rows.length) return ''
-  return '\n\nContexto de la conversación actual (SOLO referencia para orientar el significado del borrador: no lo resumas, no lo menciones en el resultado, no añadas requisitos provenientes de él):\n' + rows.join('\n---\n')
-}
-
-// Falla callado: sin historial, sin sesión o sin gateway → mejora normal.
-async function fetchSessionContext(sessionId) {
-  if (!sessionId) return ''
-  try {
-    const gw = host.getGateway()
-    if (!gw) return ''
-    const res = await gw.request('session.history', { session_id: sessionId }, 10_000)
-    return buildContextBlock(res?.messages)
-  } catch { return '' }
-}
-
 // ── i18n via official channel (v3 §3-⑩) ──
 // ctx.i18n.register(LOCALES): nested tree, dot-path keys, interpolator fns.
 // Components read via usePluginI18n(ID) (reactive on locale switch);
 // non-React handlers use ctx.i18n.t captured at register time.
 // ES bundle (fork sanyagouan): Spanish UI; 'es-ES' aliases the same tree.
 const ES = {
-  tip: { idle: 'Mejorar prompt', enhancing: 'Mejorando…', retrying: 'Límite de peticiones — reintentando…', revert: 'Volver al original', pinned: (m) => `Mejorar prompt (${m})`, profile: (p) => `Mejorar prompt · ${p}` },
+  tip: { idle: 'Mejorar prompt', enhancing: 'Mejorando…', retrying: 'Límite de peticiones — reintentando…', revert: 'Volver al original', pinned: (m) => `Mejorar prompt (${m})` },
   menu: {
     custom: 'Modelo personalizado', off: 'No', on: 'Sí',
-    profile: 'Perfil (clic para cambiar)',
     statusMain: 'Actual: modelo principal',
     statusPick: 'Actívalo y elige arriba un modelo'
   },
-  profile: { general: 'General', tecnico: 'Técnico', conciso: 'Conciso', razonamiento: 'Razonamiento' },
   notify: {
     noEditor: 'No se encontró el cuadro de texto',
     notEditable: 'El cuadro de texto no es editable ahora mismo',
@@ -222,14 +166,12 @@ const LOCALES = {
   es: ES,
   'es-ES': ES,
   en: {
-    tip: { idle: 'Enhance prompt', enhancing: 'Enhancing…', retrying: 'Rate limited — retrying…', revert: 'Revert to original', pinned: (m) => `Enhance prompt (${m})`, profile: (p) => `Enhance prompt · ${p}` },
+    tip: { idle: 'Enhance prompt', enhancing: 'Enhancing…', retrying: 'Rate limited — retrying…', revert: 'Revert to original', pinned: (m) => `Enhance prompt (${m})` },
     menu: {
       custom: 'Custom model', off: 'Off', on: 'On',
-      profile: 'Profile (click to cycle)',
       statusMain: 'Current: main model',
       statusPick: 'Turn on, then pick a model above'
     },
-    profile: { general: 'General', tecnico: 'Technical', conciso: 'Concise', razonamiento: 'Reasoning' },
     notify: {
       noEditor: 'Composer not found',
       notEditable: 'Composer is not editable right now',
@@ -245,14 +187,12 @@ const LOCALES = {
     }
   },
   zh: {
-    tip: { idle: '增强提示词', enhancing: '增强中…', retrying: '限流重试中…', revert: '恢复原文', pinned: (m) => `增强提示词（${m}）`, profile: (p) => `增强提示词 · ${p}` },
+    tip: { idle: '增强提示词', enhancing: '增强中…', retrying: '限流重试中…', revert: '恢复原文', pinned: (m) => `增强提示词（${m}）` },
     menu: {
       custom: '自定义模型', off: '关', on: '开',
-      profile: '模式（点击切换）',
       statusMain: '当前：主模型',
       statusPick: '开启后，点上方列表选模型'
     },
-    profile: { general: '通用', tecnico: '技术', conciso: '简洁', razonamiento: '推理' },
     notify: {
       noEditor: '未找到输入框',
       notEditable: '输入框当前不可编辑',
@@ -268,14 +208,12 @@ const LOCALES = {
     }
   },
   'zh-hant': {
-    tip: { idle: '增強提示詞', enhancing: '增強中…', retrying: '限流重試中…', revert: '恢復原文', pinned: (m) => `增強提示詞（${m}）`, profile: (p) => `增強提示詞 · ${p}` },
+    tip: { idle: '增強提示詞', enhancing: '增強中…', retrying: '限流重試中…', revert: '恢復原文', pinned: (m) => `增強提示詞（${m}）` },
     menu: {
       custom: '自訂模型', off: '關', on: '開',
-      profile: '模式（點擊切換）',
       statusMain: '目前：主模型',
       statusPick: '開啟後，點上方列表選模型'
     },
-    profile: { general: '通用', tecnico: '技術', conciso: '簡潔', razonamiento: '推理' },
     notify: {
       noEditor: '未找到輸入框',
       notEditable: '輸入框目前不可編輯',
@@ -361,8 +299,6 @@ async function runEnhance(btnEl, onPhase, onRetry) {
     return
   }
   if (text.length > MAX_INPUT_CHARS) return tNotify('error', 'notify.tooLong', text.length, MAX_INPUT_CHARS)
-  // Session context BEFORE the seq bump: its own failure mode is '' (silent).
-  const ctxBlock = await fetchSessionContext(sessionId)
 
   const snapshot = text
   // Draft-unchanged guard: re-read the live draft and compare TEXT. Prevents
@@ -372,9 +308,9 @@ async function runEnhance(btnEl, onPhase, onRetry) {
   st.phase = 'enhancing'
   onPhase('enhancing')
   try {
-    const instructions = (hasChips
+    const instructions = hasChips
       ? SYSTEM_TEMPLATE + '\n\nRestricción adicional estricta: las marcas @file:, @folder:, @url:, @image: y similares del texto son tokens de referencia a archivos o recursos; consérvalos tal cual en el resultado (puedes reposicionarlos con criterio); está prohibido reescribirlos, traducirlos o eliminarlos.'
-      : SYSTEM_TEMPLATE) + (PROFILE_SUFFIX[profileCurrent] ?? '') + ctxBlock
+      : SYSTEM_TEMPLATE
     const req = {
       instructions,
       input: text,
@@ -531,13 +467,6 @@ function EnhanceButton() {
     pinListeners.add(fn)
     return () => pinListeners.delete(fn)
   }, [])
-  // Perfil de mejora: valor global, espejo reactivo por el mismo patrón del pin.
-  const [profile, setProfileState] = useState(profileCurrent)
-  useEffect(() => {
-    const fn = (v) => setProfileState(v)
-    profileListeners.add(fn)
-    return () => profileListeners.delete(fn)
-  }, [])
   const syncPhase = useCallback((p) => {
     const editor = resolveEditor(btnRef.current)
     if (editor) editorState(editor).phase = p
@@ -579,10 +508,10 @@ function EnhanceButton() {
   }, [phase])
 
   const onClick = (e) => {
-    // ⌘/Ctrl+click opens the model picker instead of enhancing (the DropdownMenu
-    // trigger already toggled on pointerdown; the gesture's modifier was
+    // ⌘+click opens the model picker instead of enhancing (the DropdownMenu
+    // trigger already toggled on pointerdown; the gesture's metaKey was
     // captured there and gates the onOpenChange below).
-    if (e?.metaKey || e?.ctrlKey) return
+    if (e?.metaKey) return
     const editor = resolveEditor(btnRef.current)
     const st = editor ? editorState(editor) : null
     const current = st?.phase ?? phaseRef.current
@@ -601,8 +530,7 @@ function EnhanceButton() {
   const tip = phase === 'enhancing'
     ? (retrying ? t('tip.retrying') : t('tip.enhancing'))
     : phase === 'enhanced' ? t('tip.revert')
-    : effPin ? t('tip.pinned', `${effPin.provider}: ${effPin.model}`)
-    : profile !== 'general' ? t('tip.profile', t(`profile.${profile}`)) : t('tip.idle')
+    : effPin ? t('tip.pinned', `${effPin.provider}: ${effPin.model}`) : t('tip.idle')
 
   // The MENU is not ours: ModelCatalogMenu from the SDK is the same component
   // the composer's model pill renders (search, provider grouping, effort
@@ -635,8 +563,8 @@ function EnhanceButton() {
         key: 'trigger',
         asChild: true,
         children: jsx('span', {
-          onPointerDownCapture: (e) => { metaGesture.current = Boolean(e.metaKey || e.ctrlKey) },
-          onKeyDownCapture: (e) => { metaGesture.current = Boolean(e.metaKey || e.ctrlKey) },
+          onPointerDownCapture: (e) => { metaGesture.current = Boolean(e.metaKey) },
+          onKeyDownCapture: (e) => { metaGesture.current = Boolean(e.metaKey) },
           style: { display: 'inline-flex' },
           children: jsx(Tip, {
             label: tip,
@@ -695,18 +623,6 @@ function EnhanceButton() {
                 ]
               }),
               jsx(DropdownMenuItem, {
-                key: 'profile',
-                onSelect: (e) => {
-                  e.preventDefault() // el menú permanece abierto mientras se cicla
-                  setProfile(PROFILE_ORDER[(PROFILE_ORDER.indexOf(profile) + 1) % PROFILE_ORDER.length])
-                },
-                children: [
-                  jsx(Codicon, { key: 'picon', name: 'sparkle', size: '0.75rem' }),
-                  jsx('span', { key: 'plabel', style: { flex: 1, minWidth: 0 }, children: t('menu.profile') }),
-                  jsx('span', { key: 'pval', style: { color: 'var(--ui-text-tertiary)' }, children: t(`profile.${profile}`) })
-                ]
-              }),
-              jsx(DropdownMenuItem, {
                 key: 'status',
                 disabled: true,
                 onSelect: (e) => e.preventDefault(),
@@ -731,13 +647,12 @@ function EnhanceButton() {
 export default {
   id: ID,
   name: 'Prompt Enhancer',
-  description: 'A composer ✨ button that rewrites a rough draft into a structured prompt (task / scope / constraints / output shape) and restores the original on a second click. ⌘/Ctrl+click picks a dedicated enhance model (toggleable; off = main model).',
+  description: 'A composer ✨ button that rewrites a rough draft into a structured prompt (task / scope / constraints / output shape) and restores the original on a second click. ⌘+click picks a dedicated enhance model (toggleable; off = main model).',
   register(ctx) {
     const disposeI18n = ctx.i18n.register(LOCALES)
     ti18nStatic = ctx.i18n.t
     storageApi = ctx.storage
     modelPin = loadPin()
-    profileCurrent = loadProfile()
     injectSpinnerStyle()
 
     ctx.register({
@@ -752,7 +667,6 @@ export default {
       ti18nStatic = null
       storageApi = null
       pinListeners.clear()
-      profileListeners.clear()
     })
     console.error(`[prompt-enhancer] registered (M2) into ${COMPOSER_AREAS.actions}`)
   }

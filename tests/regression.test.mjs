@@ -167,7 +167,7 @@ test('R9: chip token 走草稿文本保护，模板含 token 保真约束', () =
 test('R11: ⌘+click 浮层齐备（开关 / oneshot 透传 / 存储 / 官方菜单）', () => {
   const fs = process.getBuiltinModule('fs')
   const src = fs.readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
-  assert.ok(/if \(e\?\.metaKey \|\| e\?\.ctrlKey\) return/.test(src), '⌘/Ctrl+click 分流存在（普通点击不中断增强）')
+  assert.ok(/if \(e\?\.metaKey\) return/.test(src), '⌘+click 分流存在（普通点击不中断增强）')
   assert.ok(/const pin = effectivePin\(\)/.test(src), '调用前算 effective pin（开+选齐才生效）')
   assert.ok(!/req\.session_id/.test(src) || /if \(pin\)/.test(src), '裸请求不带 session_id（关=主模型）')
   assert.ok(/req\.provider = pin\.provider/.test(src) && /req\.model = pin\.model/.test(src),
@@ -229,46 +229,6 @@ test('R12: pin 开关语义（同构镜像）', () => {
   // 坏数据 → 默认
   store.set('enhanceModel', { model: 42 })
   assert.equal(loadPin().provider, '', '坏数据归一化，不崩溃')
-})
-// [fork es] Perfiles + contexto de sesión + cláusula de rigor
-test('R13: perfiles (ciclo, storage, sufijos) y session.history presentes', () => {
-  const fs = process.getBuiltinModule('fs')
-  const src = fs.readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
-  assert.ok(/PROFILE_ORDER = \['general', 'tecnico', 'conciso', 'razonamiento'\]/.test(src), 'orden de perfiles')
-  assert.ok(/storageApi\?\.set\('enhanceProfile'/.test(src), 'perfil persistido en ctx.storage')
-  assert.ok(/PROFILE_SUFFIX\[profileCurrent\]/.test(src), 'sufijo de perfil inyectado en instructions')
-  assert.ok(/session\.history/.test(src) && /session_id: sessionId/.test(src), 'contexto vía session.history')
-  // Espejo funcional de buildContextBlock (solo lo esencial)
-  const CTX_MAX_ROWS = 8, CTX_MAX_ROW_CHARS = 500
-  function buildContextBlock(messages) {
-    const rows = (Array.isArray(messages) ? messages : [])
-      .filter((m) => (m?.role === 'user' || m?.role === 'assistant') && typeof m?.text === 'string' && m.text.trim() && m?.display_kind !== 'hidden')
-      .slice(-CTX_MAX_ROWS)
-      .map((m) => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, CTX_MAX_ROW_CHARS)}`)
-    if (!rows.length) return ''
-    return rows.join('\n---\n')
-  }
-  assert.equal(buildContextBlock(undefined), '')
-  assert.equal(buildContextBlock([{ role: 'tool', text: 'x' }, { role: 'user', text: '', display_kind: 'visible' }]), '')
-  const out = buildContextBlock([
-    { role: 'tool', text: 'ignorar' },
-    { role: 'user', text: 'hola\n mundo', display_kind: 'visible' },
-    { role: 'assistant', text: 'que tal  '.repeat(60) },
-    { role: 'user', text: 'última', display_kind: 'hidden' }
-  ])
-  const lines = out.split('\n---\n')
-  assert.equal(lines.length, 2, 'solo user/assistant visibles con texto')
-  assert.ok(lines[0].startsWith('Usuario: hola mundo'))
-  assert.ok(lines[1].length <= 'Asistente: '.length + CTX_MAX_ROW_CHARS, 'fila recortada a 500 chars')
-})
-test('R14: cláusula de rigor implícita en SYSTEM_TEMPLATE', () => {
-  const fs = process.getBuiltinModule('fs')
-  const src = fs.readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
-  const m = src.match(/const SYSTEM_TEMPLATE = `(.*?)`/s)
-  assert.ok(m, 'SYSTEM_TEMPLATE existe')
-  assert.ok(/contrastar antes de afirmar/.test(m[1]), 'exigencia de contraste')
-  assert.ok(/admitir lo que se desconozca/.test(m[1]), 'admitir ignorancia')
-  assert.ok(/no fuerces esa exigencia/.test(m[1]), 'no forzar en prompts triviales/creativos')
 })
 // ── 汇总 ──
 let fail = 0
