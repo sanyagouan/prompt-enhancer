@@ -44,6 +44,7 @@ Principios de reescritura:
 - Aporta el contexto y las restricciones necesarias
 - Define con precisión la forma de la salida esperada
 - Estructura clara, lista para ejecutar
+- Cuando el borrador pida datos, análisis o cualquier afirmación verificable, incorpora a la propia redacción la exigencia de contrastar antes de afirmar, señalar lo que no esté contrastado y admitir lo que se desconozca; en prompts triviales o creativos no fuerces esa exigencia
 - Detecta y corrige automáticamente errores de dictado por voz, erratas, homófonos, caracteres omitidos o duplicados y órdenes de las palabras evidentemente equivocadas (por ejemplo, restaurar «todabia» a «todavía»); corrige infiriendo la intención real del usuario sin cambiar el sentido; si no puedes determinar si algo es un error, déjalo tal cual y no sobrecorrijas
 
 Restricciones estrictas:
@@ -133,6 +134,31 @@ function setModelPin(patch) {
 // The pin that actually routes a request: enabled AND fully specified.
 function effectivePin() {
   return modelPin?.enabled && modelPin.provider && modelPin.model ? modelPin : null
+}
+
+// ── Session context (fork es): últimos turnos como referencia ─────────────
+// Pura y testeable: solo user/assistant visibles y con texto, últimos N,
+// cada fila recortada. Devuelve '' si no hay nada utilizable.
+const CTX_MAX_ROWS = 8
+const CTX_MAX_ROW_CHARS = 500
+function buildContextBlock(messages) {
+  const rows = (Array.isArray(messages) ? messages : [])
+    .filter((m) => (m?.role === 'user' || m?.role === 'assistant') && typeof m?.text === 'string' && m.text.trim() && m?.display_kind !== 'hidden')
+    .slice(-CTX_MAX_ROWS)
+    .map((m) => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, CTX_MAX_ROW_CHARS)}`)
+  if (!rows.length) return ''
+  return '\n\nContexto de la conversación actual (SOLO referencia para orientar el significado del borrador: no lo resumas, no lo menciones en el resultado, no añadas requisitos provenientes de él):\n' + rows.join('\n---\n')
+}
+
+// Falla callado: sin historial, sin sesión o sin gateway → mejora normal.
+async function fetchSessionContext(sessionId) {
+  if (!sessionId) return ''
+  try {
+    const gw = host.getGateway()
+    if (!gw) return ''
+    const res = await gw.request('session.history', { session_id: sessionId }, 10_000)
+    return buildContextBlock(res?.messages)
+  } catch { return '' }
 }
 
 // ── i18n via official channel (v3 §3-⑩) ──
@@ -299,6 +325,8 @@ async function runEnhance(btnEl, onPhase, onRetry) {
     return
   }
   if (text.length > MAX_INPUT_CHARS) return tNotify('error', 'notify.tooLong', text.length, MAX_INPUT_CHARS)
+  // Contexto de sesión ANTES del seq: su único modo de fallo es '' (silencioso).
+  const ctxBlock = await fetchSessionContext(sessionId)
 
   const snapshot = text
   // Draft-unchanged guard: re-read the live draft and compare TEXT. Prevents
@@ -308,9 +336,9 @@ async function runEnhance(btnEl, onPhase, onRetry) {
   st.phase = 'enhancing'
   onPhase('enhancing')
   try {
-    const instructions = hasChips
+    const instructions = (hasChips
       ? SYSTEM_TEMPLATE + '\n\nRestricción adicional estricta: las marcas @file:, @folder:, @url:, @image: y similares del texto son tokens de referencia a archivos o recursos; consérvalos tal cual en el resultado (puedes reposicionarlos con criterio); está prohibido reescribirlos, traducirlos o eliminarlos.'
-      : SYSTEM_TEMPLATE
+      : SYSTEM_TEMPLATE) + ctxBlock
     const req = {
       instructions,
       input: text,
