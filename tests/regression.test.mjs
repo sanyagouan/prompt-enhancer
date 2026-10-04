@@ -121,9 +121,9 @@ test('R7: SYSTEM_TEMPLATE 含语音纠错原则与全休→全修示例', () => 
   const src = fs.readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
   const m = src.match(/const SYSTEM_TEMPLATE = `(.*?)`/s)
   assert.ok(m, 'SYSTEM_TEMPLATE 存在')
-  assert.ok(/语音输入/.test(m[1]), '含语音输入纠错')
-  assert.ok(/全休/.test(m[1]) && /全修/.test(m[1]), '含同音字示例锚点')
-  assert.ok(/无法确定是否错误时保持原样/.test(m[1]), '含过度改写护栏')
+  assert.ok(/dictado por voz/.test(m[1]), '含语音输入纠错 (dictado por voz)')
+  assert.ok(/«todabia»/.test(m[1]) && /«todavía»/.test(m[1]), '含同音字示例锚点 (todabia→todavía)')
+  assert.ok(/déjalo tal cual/.test(m[1]), '含过度改写护栏 (fork es)')
 })
 
 // [取消语义] WorkBuddy parity：转圈可点=取消，取消后迟到大结果丢弃
@@ -153,7 +153,7 @@ test('R9: chip token 走草稿文本保护，模板含 token 保真约束', () =
   assert.ok(/CHIP_REF_RE\.test\(text\)/.test(src), 'hasChips 走文本正则')
   assert.ok(!/querySelector\('\[data-ref-text\]'\)/.test(src), '不再查 chip DOM')
   // chip 存在时，模板追加 token 保真约束（用户核心诉求：引用标记不丢）
-  assert.ok(/额外硬性约束[\s\S]*必须原样保留/.test(src), '模板含 token 原样保留约束')
+  assert.ok(/Restricción adicional estricta[\s\S]*consérvalos tal cual/.test(src), '模板含 token 原样保留约束 (fork es)')
   const m = src.match(/const SYSTEM_TEMPLATE = `(.*?)`/s)
   assert.ok(m && !/输出格式防误识别/.test(m[1]), '模板无防误识别约束（已回滚）')
 })
